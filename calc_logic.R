@@ -3,14 +3,14 @@ library(magrittr)
 library(ROCR)
 library(glue)
 
-plot_score_histogram <- function(d, th, n_bins=90, opt_th=0.5, mode='count'){
+plot_score_histogram <- function(d, th, n_bins=90, opt_th=0.5, mode='count', log_y=F){
   g_hist <- ggplot(d, aes(pred, fill=y, group=y))
   
   if(mode == 'count'){
     g_hist <- g_hist + 
       geom_histogram(bins=n_bins, position = 'identity', alpha=0.8) + 
       geom_vline(xintercept = th, linetype='dashed') + 
-      geom_vline(xintercept = opt_th, linetype='dashed', colour='red')
+      geom_vline(xintercept = opt_th, linetype='dashed', colour='blue')
     
     g_hist <- g_hist + 
       ggtitle('Prediction score histogram(count)') + 
@@ -19,7 +19,7 @@ plot_score_histogram <- function(d, th, n_bins=90, opt_th=0.5, mode='count'){
     g_hist <- g_hist + 
       geom_histogram(aes(y = ..density..), bins=n_bins, position = 'identity', alpha=0.8) + 
       geom_vline(xintercept = th, linetype='dashed') + 
-      geom_vline(xintercept = opt_th, linetype='dashed', colour='red')
+      geom_vline(xintercept = opt_th, linetype='dashed', colour='blue')
     
     g_hist <- g_hist + 
       coord_cartesian(ylim = c(0, 0.6)) + 
@@ -27,11 +27,16 @@ plot_score_histogram <- function(d, th, n_bins=90, opt_th=0.5, mode='count'){
       theme(legend.position = 'none', plot.background = element_blank())
   }
   
+  if(log_y){
+    g_hist <- g_hist + scale_y_sqrt()
+  }
+  
   g_hist <- g_hist + coord_cartesian(xlim = c(-5, 5))
   
   return(g_hist)
 }
 
+library(grid)
 plot_roc <- function(d){
   rr_pred <- ROCR::prediction(d$pred, d$y)
   
@@ -54,6 +59,15 @@ plot_roc <- function(d){
   return(g_roc)
 }
 
+add_optimal_opints <- function(g_roc, th1){
+  g_roc <- g_roc + 
+    geom_point(data = data.frame(x=th1$fpr, y=th1$tpr), colour='blue') 
+  g_roc <- g_roc + 
+    annotation_custom(grid::textGrob('Blue opint: optimal threshold with Youden-Index', x=1, y=0.1, hjust=1.1, gp=gpar(fontsize=9))) 
+  
+  return(g_roc)  
+}
+
 plot_pr <- function(d){
   rr_pred <- ROCR::prediction(d$pred, d$y)
   
@@ -63,6 +77,7 @@ plot_pr <- function(d){
   rr_perf <- ROCR::performance(rr_pred, measure = 'prec', x.measure = 'rec')
   d_perf <- data.frame(rr_perf@x.values, rr_perf@y.values)
   colnames(d_perf) <- c('x', 'y')
+  d_perf <- rbind(d_perf, data.frame(x=1, y=0)) %>% distinct()
   
   g_pr <- ggplot(d_perf, aes(x=x, y=y)) +
     geom_line(colour=4)
@@ -70,6 +85,7 @@ plot_pr <- function(d){
     ggtitle('PR curve', subtitle = glue('AUC for PR-curve={round(v_auc, 6)}')) +
     xlab('Precision') +
     ylab('Recall') +
+    coord_cartesian(xlim = c(0, 1), ylim = c(0, 1)) + 
     theme(plot.background = element_blank())
   
   return(g_pr)
@@ -79,15 +95,38 @@ get_threshold_by_youden_index <- function(d){
   rr_pred <- ROCR::prediction(d$pred, d$y)
   rr_perf <- ROCR::performance(rr_pred, measure = 'tpr', x.measure = 'fpr')
   youden_index <- rr_perf@y.values[[1]] - rr_perf@x.values[[1]]
-  th <- rr_pred@cutoffs[[1]][which.max(youden_index)]
+  ix <- which.max(youden_index)
+  th <- rr_pred@cutoffs[[1]][ix]
+  c_fpr <- rr_perf@x.values[[1]][ix]
+  c_tpr <- rr_perf@y.values[[1]][ix]
+  ret = list(threshold = th,
+             tpr = c_tpr,
+             fpr = c_fpr)
+  return(ret)
+}
 
-  return(th)
+get_threshold_by_TPR_TNR <- function(d){
+  rr_pred <- ROCR::prediction(d$pred, d$y)
+  rr_perf <- ROCR::performance(rr_pred, measure = 'tpr', x.measure = 'tnr')
+  rr_perf2 <- ROCR::performance(rr_pred, measure = 'tpr', x.measure = 'fpr')
+  tptn <- rr_perf@y.values[[1]] + rr_perf@x.values[[1]]
+  ix <- which.max(tptn)
+  th <- rr_pred@cutoffs[[1]][ix]
+  c_y <- rr_perf2@x.values[[1]][ix]
+  c_x <- rr_perf2@y.values[[1]][ix]
+  ret = list(threshold = th,
+             tpr = c_x,
+             fpr = c_y)
+  return(ret)
 }
 
 get_threshold <- function(d, mode='youden'){
   if(mode=='youden'){
     ret <- get_threshold_by_youden_index(d)
+  } else if(mode=='tptn'){
+    ret <- get_threshold_by_TPR_TNR(d)
   }
+  
   return(ret)
 }
 
@@ -114,7 +153,7 @@ get_confusion_matrix_plot <- function(d, th=0, str_title){
     geom_tile() + 
     geom_text(colour='white', size=10)
   g <- g + 
-    theme(legend.position = 'none', , plot.background = element_blank()) +
+    theme(legend.position = 'none', plot.background = element_blank()) +
     ggtitle(str_title, subtitle = glue('correct:{correct_case}\nincorrect:{incorrect_case}')) + 
     xlab('Grand Truth') + 
     ylab('Prediction')
